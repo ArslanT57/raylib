@@ -25,6 +25,7 @@ function platform_defines()
     filter {"system:linux"}
         defines {"_GLFW_X11"}
         defines {"_GNU_SOURCE"}
+end
 
 project "raylib"
     kind "StaticLib"
