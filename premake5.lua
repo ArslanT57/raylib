@@ -60,7 +60,7 @@ project "raylib"
 
     removefiles {"/src/rcore_*.c"}
 
-    filter { "system:macosx", "files:" .. IncludeDir.Raylib .. "/src/rglfw.c" }
+    filter { "system:macosx", "files:" .. IncludeDir.raylib .. "/src/rglfw.c" }
         compileas "Objective-C"
 
     filter {}
