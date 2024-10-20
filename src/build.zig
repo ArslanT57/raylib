@@ -1,8 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Minimum supported version of Zig
+const min_ver = "0.12.0";
+
 comptime {
-    if (builtin.zig_version.minor < 12) @compileError("Raylib requires zig version 0.12.0");
+    const order = std.SemanticVersion.order;
+    const parse = std.SemanticVersion.parse;
+    if (order(builtin.zig_version, parse(min_ver) catch unreachable) == .lt)
+        @compileError("Raylib requires zig version " ++ min_ver);
 }
 
 // NOTE(freakmangd): I don't like using a global here, but it prevents having to
@@ -24,7 +30,7 @@ pub fn addRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         .rshapes = options.rshapes,
         .rtext = options.rtext,
         .rtextures = options.rtextures,
-        .platform_drm = options.platform_drm,
+        .platform = options.platform,
         .shared = options.shared,
         .linux_display_backend = options.linux_display_backend,
         .opengl_version = options.opengl_version,
@@ -51,6 +57,21 @@ fn setDesktopPlatform(raylib: *std.Build.Step.Compile, platform: PlatformBackend
     }
 }
 
+/// TODO: Once the minimum supported version is bumped to 0.14.0, it can be simplified again:
+/// https://github.com/raysan5/raylib/pull/4375#issuecomment-2408998315
+/// https://github.com/raysan5/raylib/blob/9b9c72eb0dc705cde194b053a366a40396acfb67/src/build.zig#L54-L56
+fn srcDir(b: *std.Build) []const u8 {
+    comptime {
+        const order = std.SemanticVersion.order;
+        const parse = std.SemanticVersion.parse;
+        if (order(parse(min_ver) catch unreachable, parse("0.14.0") catch unreachable) != .lt)
+            @compileError("Please take a look at this function again");
+    }
+
+    const src_file = std.fs.path.relative(b.allocator, ".", @src().file) catch @panic("OOM");
+    return std.fs.path.dirname(src_file) orelse ".";
+}
+
 fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, options: Options) !*std.Build.Step.Compile {
     raylib_flags_arr.clearRetainingCapacity();
 
@@ -64,9 +85,8 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         "-DGL_SILENCE_DEPRECATION=199309L",
         "-fno-sanitize=undefined", // https://github.com/raysan5/raylib/issues/3674
     });
-    if (options.config) |config| {
-        const file = try std.fs.path.join(b.allocator, &.{ std.fs.path.dirname(@src().file) orelse ".", "config.h" });
-        defer b.allocator.free(file);
+    if (options.config.len > 0) {
+        const file = b.pathJoin(&.{ srcDir(b), "config.h" });
         const content = try std.fs.cwd().readFileAlloc(b.allocator, file, std.math.maxInt(usize));
         defer b.allocator.free(content);
 
@@ -83,14 +103,14 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
             flag = try std.fmt.allocPrint(b.allocator, "-D{s}", .{flag}); // Prepend with -D
 
             // If user specifies the flag skip it
-            if (std.mem.containsAtLeast(u8, config, 1, flag)) continue;
+            if (std.mem.containsAtLeast(u8, options.config, 1, flag)) continue;
 
             // Append default value from config.h to compile flags
             try raylib_flags_arr.append(b.allocator, flag);
         }
 
         // Append config flags supplied by user to compile flags
-        try raylib_flags_arr.append(b.allocator, config);
+        try raylib_flags_arr.append(b.allocator, options.config);
 
         try raylib_flags_arr.append(b.allocator, "-DEXTERNAL_CONFIG_FLAGS");
     }
@@ -115,7 +135,7 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
 
     // No GLFW required on PLATFORM_DRM
     if (options.platform != .drm) {
-        raylib.addIncludePath(b.path("src/external/glfw/include"));
+        raylib.addIncludePath(b.path(b.pathJoin(&.{ srcDir(b), "external/glfw/include" })));
     }
 
     var c_source_files = try std.ArrayList([]const u8).initCapacity(b.allocator, 2);
@@ -168,17 +188,16 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
                 if (options.linux_display_backend == .Wayland or options.linux_display_backend == .Both) {
                     _ = b.findProgram(&.{"wayland-scanner"}, &.{}) catch {
                         std.log.err(
-                            \\ Wayland may not be installed on the system.
+                            \\ `wayland-scanner` may not be installed on the system.
                             \\ You can switch to X11 in your `build.zig` by changing `Options.linux_display_backend`
                         , .{});
-                        @panic("No Wayland");
+                        @panic("`wayland-scanner` not found");
                     };
                     raylib.defineCMacro("_GLFW_WAYLAND", null);
                     raylib.linkSystemLibrary("wayland-client");
                     raylib.linkSystemLibrary("wayland-cursor");
                     raylib.linkSystemLibrary("wayland-egl");
                     raylib.linkSystemLibrary("xkbcommon");
-                    raylib.addIncludePath(b.path("src"));
                     waylandGenerate(b, raylib, "wayland.xml", "wayland-client-protocol");
                     waylandGenerate(b, raylib, "xdg-shell.xml", "xdg-shell-client-protocol");
                     waylandGenerate(b, raylib, "xdg-decoration-unstable-v1.xml", "xdg-decoration-unstable-v1-client-protocol");
@@ -229,7 +248,7 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
             // On macos rglfw.c include Objective-C files.
             try raylib_flags_arr.append(b.allocator, "-ObjC");
             raylib.root_module.addCSourceFile(.{
-                .file = b.path("src/rglfw.c"),
+                .file = b.path(b.pathJoin(&.{ srcDir(b), "rglfw.c" })),
                 .flags = raylib_flags_arr.items,
             });
             _ = raylib_flags_arr.pop();
@@ -251,8 +270,7 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
                 @panic("Pass '--sysroot \"$EMSDK/upstream/emscripten\"'");
             }
 
-            const cache_include = std.fs.path.join(b.allocator, &.{ b.sysroot.?, "cache", "sysroot", "include" }) catch @panic("Out of memory");
-            defer b.allocator.free(cache_include);
+            const cache_include = b.pathJoin(&.{ b.sysroot.?, "cache", "sysroot", "include" });
 
             var dir = std.fs.openDirAbsolute(cache_include, std.fs.Dir.OpenDirOptions{ .access_sub_paths = true, .no_follow = true }) catch @panic("No emscripten cache. Generate it!");
             dir.close();
@@ -263,9 +281,8 @@ fn compileRaylib(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
         },
     }
 
-    raylib.addIncludePath(b.path("src"));
     raylib.root_module.addCSourceFiles(.{
-        .root = b.path("src"),
+        .root = b.path(srcDir(b)),
         .files = c_source_files.items,
         .flags = raylib_flags_arr.items,
     });
@@ -303,7 +320,7 @@ pub const Options = struct {
     linux_display_backend: LinuxDisplayBackend = .Both,
     opengl_version: OpenglVersion = .auto,
     /// config should be a list of cflags, eg, "-DSUPPORT_CUSTOM_FRAME_CONTROL"
-    config: ?[]const u8 = null,
+    config: []const u8 = &.{},
 
     raygui_dependency_name: []const u8 = "raygui",
 };
@@ -358,6 +375,7 @@ pub fn build(b: *std.Build) !void {
     const options = Options{
         .platform = b.option(PlatformBackend, "platform", "Choose the platform backedn for desktop target") orelse defaults.platform,
         .raudio = b.option(bool, "raudio", "Compile with audio support") orelse defaults.raudio,
+        .raygui = b.option(bool, "raygui", "Compile with raygui support") orelse defaults.raygui,
         .rmodels = b.option(bool, "rmodels", "Compile with models support") orelse defaults.rmodels,
         .rtext = b.option(bool, "rtext", "Compile with text support") orelse defaults.rtext,
         .rtextures = b.option(bool, "rtextures", "Compile with textures support") orelse defaults.rtextures,
@@ -365,22 +383,26 @@ pub fn build(b: *std.Build) !void {
         .shared = b.option(bool, "shared", "Compile as shared library") orelse defaults.shared,
         .linux_display_backend = b.option(LinuxDisplayBackend, "linux_display_backend", "Linux display backend to use") orelse defaults.linux_display_backend,
         .opengl_version = b.option(OpenglVersion, "opengl_version", "OpenGL version to use") orelse defaults.opengl_version,
-        .config = b.option([]const u8, "config", "Compile with custom define macros overriding config.h") orelse null,
+        .config = b.option([]const u8, "config", "Compile with custom define macros overriding config.h") orelse &.{},
     };
 
     const lib = try compileRaylib(b, target, optimize, options);
 
-    lib.installHeader(b.path("src/raylib.h"), "raylib.h");
-    lib.installHeader(b.path("src/raymath.h"), "raymath.h");
-    lib.installHeader(b.path("src/rlgl.h"), "rlgl.h");
+    lib.installHeader(b.path(b.pathJoin(&.{ srcDir(b), "raylib.h" })), "raylib.h");
+    lib.installHeader(b.path(b.pathJoin(&.{ srcDir(b), "raymath.h" })), "raymath.h");
+    lib.installHeader(b.path(b.pathJoin(&.{ srcDir(b), "rlgl.h" })), "rlgl.h");
 
     b.installArtifact(lib);
 }
 
-const waylandDir = "src/external/glfw/deps/wayland";
-
-fn waylandGenerate(b: *std.Build, raylib: *std.Build.Step.Compile, comptime protocol: []const u8, comptime basename: []const u8) void {
-    const protocolDir = waylandDir ++ "/" ++ protocol;
+fn waylandGenerate(
+    b: *std.Build,
+    raylib: *std.Build.Step.Compile,
+    comptime protocol: []const u8,
+    comptime basename: []const u8,
+) void {
+    const waylandDir = b.pathJoin(&.{ srcDir(b), "external/glfw/deps/wayland" });
+    const protocolDir = b.pathJoin(&.{ waylandDir, protocol });
     const clientHeader = basename ++ ".h";
     const privateCode = basename ++ "-code.h";
 
