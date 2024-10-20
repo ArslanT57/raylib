@@ -33,13 +33,15 @@ project "raylib"
     platform_defines()
 
     language "C"
+    cdialect "C99"
+    cppdialect "C++17"
     targetdir ("%{wks.location}/bin/" .. outputdir .. "/%{prj.name}")
 	objdir ("%{wks.location}/bin-int/" .. outputdir .. "/%{prj.name}")
 
 
     filter "action:vs*"
         defines{"_WINSOCK_DEPRECATED_NO_WARNINGS", "_CRT_SECURE_NO_WARNINGS"}
-        characterset ("MBCS")
+        characterset ("Unicode")
         buildoptions { "/Zc:__cplusplus" }
     filter{}
 
@@ -52,6 +54,7 @@ project "raylib"
         "src", 
         "src/external/glfw/include" 
     }
+    flags { "ShadowedVariables"}
     vpaths
     {
         ["Header Files"] = { "/src/**.h"},
