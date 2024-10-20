@@ -44,13 +44,13 @@ project "raylib"
     filter{}
 
     files {
-        "/src/*.h", 
-        "/src/*.c"
+        "src/**.h", 
+        "src/**.c"
     }
     
     includedirs {
-        "/src", 
-        "/src/external/glfw/include" 
+        "src", 
+        "src/external/glfw/include" 
     }
     vpaths
     {
